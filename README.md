@@ -19,6 +19,10 @@ The web app has four views:
 | **Index Lab** | Collection-wide postings size per codec, a postings inspector that shows the bit layout of VByte and Elias-Gamma codes for any term, and the 3×3 build matrix with live rebuilds. |
 | **Evaluation** | RBP / DCG / NDCG / MAP for five retrieval setups, plus a per-query breakdown of where the hybrid beats BM25. |
 
+## Deploying to Vercel
+
+`pyproject.toml` points Vercel at `web.app:app`. The deployment file system is read-only, so on Vercel the indexes are built into `/tmp/index` on demand: the first request to a fresh instance builds the default index (~4 s), and other configurations are built the first time they are used. Set `TBI_INDEX_DIR` to choose another index location anywhere.
+
 ## Components
 
 - **Text processing** (`text/`): lowercase → alphabetic tokens → stopword removal → Porter stemming.

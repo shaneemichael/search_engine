@@ -3,7 +3,9 @@ Index configurations and the search engine facade shared by the CLI, the
 evaluation script and the web app.
 
 Every (indexer, dictionary, compression) combination lives in its own
-directory under `index/`, so building one never clobbers another.
+directory under the index root, so building one never clobbers another.
+The root is `index/`, or `$TBI_INDEX_DIR` when set. On Vercel, where the
+deployment is read-only, it defaults to `/tmp/index`.
 """
 import json
 import os
@@ -15,7 +17,7 @@ from compression import StandardPostings, VBEPostings, EliasGammaPostings
 from indexers import BSBIIndex, SPIMIIndex, SPIMIPatriciaIndex
 
 DATA_DIR = 'collection'
-INDEX_ROOT = 'index'
+INDEX_ROOT = os.environ.get('TBI_INDEX_DIR') or ('/tmp/index' if os.environ.get('VERCEL') else 'index')
 INDEX_NAME = 'main_index'
 META_FILE = 'meta.json'
 

@@ -1,0 +1,16 @@
+[project]
+name = "scalpel-search"
+version = "1.0.0"
+description = "A search engine from scratch over the MEDLINE collection"
+requires-python = ">=3.12"
+dependencies = [
+    "tqdm==4.67.3",
+    "numpy==2.4.2",
+    "scipy==1.17.1",
+    "faiss-cpu==1.13.2",
+    "fastapi==0.115.12",
+    "uvicorn==0.34.2",
+]
+
+[tool.vercel]
+entrypoint = "web.app:app"

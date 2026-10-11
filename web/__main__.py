@@ -13,8 +13,7 @@ def main():
     parser.add_argument("--reload", action="store_true", help="Restart on code changes")
     args = parser.parse_args()
 
-    # The index stores document paths relative to the repository root.
-    os.chdir(ROOT)
+    os.chdir(ROOT)  # so `web.app` is importable from any working directory
     uvicorn.run("web.app:app", host=args.host, port=args.port, reload=args.reload)
 
 

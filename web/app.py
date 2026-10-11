@@ -16,7 +16,11 @@ from retrieval import document_title, highlight, read_document, snippet
 from storage import InvertedIndexReader
 from text import tokenize
 
-STATIC_DIR = os.path.join(os.path.dirname(__file__), 'static')
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+STATIC_DIR = os.path.join(ROOT, 'web', 'static')
+
+# The collection, qrels and stored document paths are relative to the repository root.
+os.chdir(ROOT)
 
 app = FastAPI(title="Scalpel search engine")
 
