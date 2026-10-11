@@ -27,10 +27,9 @@ class StandardPostings:
         bytes
             bytearray representing the sequence of integers in postings_list
         """
-        # For the standard one, use L for unsigned long, because docID
-        # will not be negative. And we assume the largest docID
-        # can fit in a 4-byte unsigned representation.
-        return array.array('L', postings_list).tobytes()
+        # 'I' (unsigned int) is 4 bytes on every mainstream platform, unlike
+        # 'L' (unsigned long), which is 8 bytes on Linux and 4 on Windows.
+        return array.array('I', postings_list).tobytes()
 
     @staticmethod
     def decode(encoded_postings_list):
@@ -48,7 +47,7 @@ class StandardPostings:
         List[int]
             list of docIDs that is the result of decoding encoded_postings_list
         """
-        decoded_postings_list = array.array('L')
+        decoded_postings_list = array.array('I')
         decoded_postings_list.frombytes(encoded_postings_list)
         return decoded_postings_list.tolist()
 
