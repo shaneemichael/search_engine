@@ -1,4 +1,5 @@
 import os
+import pickle
 from .base import InvertedIndex
 
 class InvertedIndexWriter(InvertedIndex):
@@ -36,3 +37,9 @@ class InvertedIndexWriter(InvertedIndex):
         self.index_file.write(compressed_tf_list)
         self.postings_dict[term] = (curr_position_in_byte, len(postings_list), \
                                     len(compressed_postings), len(compressed_tf_list))
+
+    def __exit__(self, exception_type, exception_value, traceback):
+        """Closes the index file and saves the metadata (postings dict, terms, doc lengths, WAND bounds)."""
+        self.index_file.close()
+        with open(self.metadata_file_path, 'wb') as f:
+            pickle.dump([self.postings_dict, self.terms, self.doc_length, self.max_score_dict], f)

@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Scalpel · Search Engine from Scratch</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='13' cy='13' r='9' fill='none' stroke='%230f766e' stroke-width='3'/%3E%3Cpath d='M20 20l8 8' stroke='%2316181d' stroke-width='3.5' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/app.css?v=1">
+</head>
+<body>
+  <header class="topbar" id="topbar">
+    <a class="brand" href="#search" aria-label="Scalpel home">
+      <svg viewBox="0 0 32 32" aria-hidden="true">
+        <circle cx="13" cy="13" r="9" fill="none" stroke="#0f766e" stroke-width="2.6"/>
+        <path d="M9 13.5c1.4-3 4.6-4.4 7.4-3.4" fill="none" stroke="#0f766e" stroke-width="2" stroke-linecap="round" opacity=".45"/>
+        <path d="M20 20l8 8" stroke="#16181d" stroke-width="3.4" stroke-linecap="round"/>
+      </svg>
+      Scalpel
+    </a>
+    <nav class="tabs" aria-label="Sections">
+      <a href="#search" data-view="search">Search</a>
+      <a href="#compare" data-view="compare">Compare</a>
+      <a href="#lab" data-view="lab">Index Lab</a>
+      <a href="#evaluation" data-view="evaluation">Evaluation</a>
+    </nav>
+    <div class="corpus-pill"><span class="dot"></span><span id="corpus-label">MEDLINE collection</span></div>
+  </header>
+
+  <main>
+    <!-- ================= SEARCH ================= -->
+    <section class="view" id="view-search">
+      <div class="search-shell" id="search-shell">
+        <div class="hero">
+          <h1>Search, <em>from scratch.</em></h1>
+          <p>An information retrieval engine built ground-up: BSBI &amp; SPIMI indexing, compressed postings, BM25 with WAND pruning and LSI semantic search.</p>
+          <div class="hero-stats" id="hero-stats"></div>
+        </div>
+        <form class="search-form" id="search-form" autocomplete="off">
+          <label class="searchbox">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+            <input id="search-input" type="search" placeholder="Search 1,033 medical abstracts…" aria-label="Search query">
+            <kbd>/</kbd>
+            <button class="btn" type="submit">Search</button>
+          </label>
+        </form>
+        <div class="suggestions" id="suggestions">
+          <div class="label">Try a benchmark query, judged against the relevance labels</div>
+          <div class="chips" id="suggestion-chips"></div>
+        </div>
+      </div>
+
+      <div id="search-body" hidden>
+        <div class="controls">
+          <span class="control-label">Ranking</span>
+          <div class="segmented" id="method-switch"></div>
+          <span class="spacer"></span>
+          <span class="control-label">Index</span>
+          <select class="select" id="search-config"></select>
+        </div>
+        <div class="analysis" id="search-analysis"></div>
+        <div class="meta-line" id="search-meta"></div>
+        <div class="results" id="results"></div>
+      </div>
+    </section>
+
+    <!-- ================= COMPARE ================= -->
+    <section class="view" id="view-compare">
+      <div class="page-head">
+        <div class="eyebrow">Ranking models</div>
+        <h1>Four rankers, <em>one query.</em></h1>
+        <p>Same index, same query: see where TF-IDF, BM25, WAND and the adaptive lexical + semantic hybrid agree, and where they diverge. Hover a document to trace it across columns.</p>
+      </div>
+      <form class="compare-bar" id="compare-form" autocomplete="off">
+        <label class="searchbox">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          <input id="compare-input" type="search" aria-label="Compare query">
+          <button class="btn" type="submit">Compare</button>
+        </label>
+        <select class="select" id="compare-config" aria-label="Index configuration"></select>
+      </form>
+      <div class="analysis" id="compare-analysis"></div>
+      <div id="compare-body"></div>
+    </section>
+
+    <!-- ================= INDEX LAB ================= -->
+    <section class="view" id="view-lab">
+      <div class="page-head">
+        <div class="eyebrow">Index internals</div>
+        <h1>Inside the <em>inverted index.</em></h1>
+        <p>Nine index builds, every combination of indexing algorithm, term dictionary and postings codec, each stored in its own directory. Inspect how a postings list is laid out bit-by-bit, and rebuild any index live.</p>
+      </div>
+
+      <div class="section-head"><div><h2>Postings compression</h2><p>Total size of the postings file for the whole collection.</p></div></div>
+      <div class="codec-grid" id="codec-grid"></div>
+
+      <div class="section">
+        <div class="section-head">
+          <div><h2>Postings inspector</h2><p>Look up a term to see its postings list, the gaps between doc IDs, and how each codec writes them.</p></div>
+        </div>
+        <div class="card">
+          <form class="inspector-form" id="inspector-form" autocomplete="off">
+            <label class="searchbox">
+              <input id="inspector-input" type="search" value="cancer" aria-label="Term">
+              <button class="btn small" type="submit">Inspect</button>
+            </label>
+          </form>
+          <div id="inspector-body"></div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-head">
+          <div><h2>Build matrix</h2><p>Indexer × dictionary × codec. Each cell is a real index on disk.</p></div>
+          <button class="btn ghost small" id="rebuild-all">Rebuild all 9</button>
+        </div>
+        <div class="matrix" id="matrix"></div>
+      </div>
+    </section>
+
+    <!-- ================= EVALUATION ================= -->
+    <section class="view" id="view-evaluation">
+      <div class="page-head">
+        <div class="eyebrow">Retrieval quality</div>
+        <h1>Measured, <em>not guessed.</em></h1>
+        <p>30 benchmark queries scored against human relevance judgments (qrels), ranked to depth 1000. Metrics: rank-biased precision, discounted cumulative gain, normalized DCG and average precision.</p>
+      </div>
+      <div id="evaluation-body"><div class="loading-note"><span class="spinner"></span>Running 30 queries through 5 retrieval setups…</div></div>
+    </section>
+  </main>
+
+  <div class="scrim" id="scrim"></div>
+  <aside class="drawer" id="drawer" aria-hidden="true">
+    <header>
+      <button class="close" id="drawer-close" aria-label="Close">×</button>
+      <div class="eyebrow" id="drawer-eyebrow">Document</div>
+      <h2 id="drawer-title"></h2>
+      <div class="facts" id="drawer-facts"></div>
+    </header>
+    <div class="body" id="drawer-body"></div>
+  </aside>
+  <div class="tooltip" id="tooltip"></div>
+
+  <script src="/static/app.js?v=1"></script>
+</body>
+</html>

@@ -1,173 +1,105 @@
-# TBI - Search Engine From Scratch
+# Scalpel: a search engine from scratch
 
-## Core Capabilities
+An information retrieval engine over the MEDLINE test collection (1,033 medical abstracts, 30 judged queries), built without IR or NLP libraries: tokenizer and Porter stemmer, BSBI and SPIMI indexing, three term dictionaries, three postings codecs, TF-IDF / BM25 / WAND ranking, and an LSI + FAISS semantic hybrid. It comes with a CLI, an evaluation harness and a web app.
 
-1. **BSBI Indexing**: Blocked Sort-Based Indexing with external merge sort for massive corpus ingestion.
-2. **Text Normalization**: Custom tokenizer pipeline (lowercase → punctuation strip → stopword removal → Porter stemming) implemented entirely without external NLP libraries.
-3. **Advanced Compression Codecs**: Memory optimization utilizing raw bytes, Variable-Byte Encoding (VBE), and Elias-Gamma bit-level dense packing.
-4. **Ranking Models**: Implements `TF-IDF` and parameterized `BM25` (with `k1=1.2`, `b=0.75`).
-5. **Dynamic Pruning**: Employs WAND (Weak AND) algorithms leveraging precomputed IDF bounds to dramatically prune Top-K retrieval execution trees.
-
-## Advanced Implementations
-
-The system natively implements the following advanced retrieval structures:
-
-- **SPIMI (Single-Pass In-Memory Indexing)**: Replaces sequential pair materialization with a dynamic hash map, exponentially reducing indexing RAM requirements.
-- **Patricia Radix Tries (`PatriciaTreeIdMap`)**: Replaces linear dictionary structures with a deeply compressed Prefix Tree array to minimize vocabulary mapping overhead.
-- **Latent Semantic Indexing (LSI + FAISS)**: Utilizes Truncated SVD across sparse CSC Term-Document Matrices to project terms into a continuous semantic factor space, optimized via FAISS L2 similarity.
-- **Dynamic Context Snippets**: Features a dynamic regex engine to map terms back to original documents, outputting highlighted context windows (Google-style) directly to the console.
-
----
-
-## Usage Guide
-
-*Requirement: `pip install -r requirements.txt`* or *`pip install tqdm faiss-cpu numpy`*
-
-### 1. Build the Indices
-You can build the base index using the default script or customize the architecture via the unified CLI. It is **required** to build the indices before running your first search.
+## Quick start
 
 ```bash
-# Build the default base index (BSBI + VBE + Standard Dictionary)
-python bsbi.py
-
-# Build a custom advanced index (e.g., SPIMI + Patricia Tree + Elias-Gamma)
-# Note: Use --build flag to construct the index before a search can be run if you haven't built it.
-python search.py --build --index spimi --dictionary patricia --compression elias
-
-# For Bonus: Build Semantic Vectors for Adaptive/FAISS Retrieval
-python build_lsi_faiss.py
+pip install -r requirements.txt
+python build.py --all        # builds all 9 index configurations (~30 s)
+python -m web                # http://127.0.0.1:8000
 ```
 
-### 2. Search Execution (Unified CLI)
-The search interface is highly parameterized. You can specify the exact architecture you want to test.
+The web app has four views:
 
-**CLI Arguments:**
-- `query`: The query string to search for. If omitted, runs default queries.
-- `--index`: Indexing algorithm (`bsbi` or `spimi`). Default: `bsbi`.
-- `--dictionary`: Dictionary structure (`standard`, `trie`, `patricia`). Default: `standard`.
-- `--compression`: Compression model (`standard`, `vbe`, `elias`). Default: `vbe`.
-- `--metric`: Retrieval metric (`tfidf`, `bm25`, `wand`, `adaptive`, `all`). Default: `all`.
-- `--build`: Build the index before searching (Boolean flag).
-- `--snippets`: Show Google-like context snippets (Boolean flag).
+| View | What it shows |
+| --- | --- |
+| **Search** | Ranked results with highlighted snippets, the query's stemming pipeline, WAND pruning stats, and relevance badges when the query is one of the 30 benchmark queries. Click a result to read the document. |
+| **Compare** | TF-IDF, BM25, WAND and Adaptive side by side for one query, with lines tracing each document's rank across rankers. |
+| **Index Lab** | Collection-wide postings size per codec, a postings inspector that shows the bit layout of VByte and Elias-Gamma codes for any term, and the 3×3 build matrix with live rebuilds. |
+| **Evaluation** | RBP / DCG / NDCG / MAP for five retrieval setups, plus a per-query breakdown of where the hybrid beats BM25. |
 
-**Examples to evaluate Specific Features:**
+## Components
 
-* **Evaluate Base System (TF-IDF vs BM25 vs WAND Top-K)**
-  ```bash
-  python search.py
-  ```
+- **Text processing** (`text/`): lowercase → alphabetic tokens → stopword removal → Porter stemming.
+- **Indexing** (`indexers/`): BSBI inverts each block from (term, doc) pairs; SPIMI builds each block's postings directly in a hash map. Blocks are merged with an external multi-way merge.
+- **Dictionaries** (`dictionary/`): hash map `IdMap`, character `TrieIdMap`, compressed `PatriciaTreeIdMap`.
+- **Postings codecs** (`compression/`): uncompressed 4-byte integers, gap + Variable-Byte, gap + Elias-Gamma (bit-packed).
+- **Ranking**: TF-IDF and BM25 (`k1=1.2`, `b=0.75`) term-at-a-time; BM25 with WAND document-at-a-time pruning, using per-term score upper bounds precomputed during the merge.
+- **Semantic hybrid** (`retrieval/`): truncated SVD (k=100) over the weighted term-document matrix, document vectors in a FAISS inner-product index, fused with BM25-WAND after min-max normalization.
 
-* **Evaluate Task 1 (Elias-Gamma Bit-Level Compression)**
-  ```bash
-  # Ensure index is built with elias compression
-  python search.py "cancer" --build --compression elias
-  ```
+## Index configurations
 
-* **Evaluate Task 2 & 4 (BM25 & WAND Optimization)**
-  ```bash
-  python search.py "tumor treatment" --metric wand --snippets
-  ```
+Each (indexer, dictionary, codec) combination is built into its own directory, `index/<indexer>-<dictionary>-<codec>/`, so configurations never overwrite each other:
 
-* **Evaluate Bonus Modules (SPIMI, Tries, Adaptive LSI retrieval)**
-  ```bash
-  # Test SPIMI and Patricia Tree Dictionary
-  python search.py "blood pressure" --build --index spimi --dictionary patricia --metric wand --snippets
+| Indexer | Dictionary | Codecs |
+| --- | --- | --- |
+| `bsbi` | `standard` | `standard`, `vbe`, `elias` |
+| `spimi` | `trie` | `standard`, `vbe`, `elias` |
+| `spimi` | `patricia` | `standard`, `vbe`, `elias` |
 
-  # Test FAISS-powered Adaptive LSI Search
-  python search.py "viral infection" --index spimi --dictionary patricia --metric adaptive --snippets
-  ```
+```bash
+python build.py --index spimi --dictionary patricia --compression elias   # one configuration (the default)
+python build.py --all --no-lsi                                            # all, skipping the semantic model
+```
 
-### 3. Quantitative Evaluation (Metrics)
-Run the automated evaluation script to grade the engine's performance against the provided `qrels.txt` using **RBP, DCG, NDCG, and AP** metrics (Task 3).
+## CLI search
 
-> ⚠️ **Important:** Because `evaluation.py` explicitly loads multiple pre-built architectures into memory simultaneously (Base VBE vs Advanced Elias), you must ensure the disk binaries match its expectations before running it. If you have been playing around with custom `--build` commands, please run the following rebuild sequence to align the bin files first:
->
-> ```bash
-> # 1. Align Base Index to VBE
-> python search.py --build --index bsbi --compression vbe
-> # 2. Align Lexical Index to Trie + Elias
-> python search.py --build --index spimi --dictionary trie --compression elias
-> # 3. Align Semantic Index to Patricia + Elias
-> python search.py --build --index spimi --dictionary patricia --compression elias
-> ```
+```bash
+python search.py "tumor treatment" --metric wand --snippets
+python search.py "viral infection" --index bsbi --dictionary standard --compression vbe --metric adaptive
+python search.py                     # three sample queries, every method
+```
+
+Options: `--index`, `--dictionary`, `--compression` select the configuration (built on first use if missing); `--metric` is `tfidf`, `bm25`, `wand`, `adaptive` or `all`; `-k` sets the number of results; `--snippets` prints highlighted context.
+
+## Evaluation
 
 ```bash
 python evaluation.py
 ```
----
 
-## Architectural Benchmarks
-
-### 1. Evaluation Results (`python evaluation.py`)
-
-Evaluating 30 medical queries across permutations demonstrates massive relevance improvements using the Hybrid Semantic topology (+12% Mean RBP).
+30 queries, ranked to depth 1000, scored against `qrels.txt`:
 
 ```text
-Retrieval Architecture                 | Time (s)   | Mean RBP   | Mean DCG   | Mean NDCG  | Mean AP   
-----------------------------------------------------------------------------------------------------
-TF-IDF (Base BSBI)                     | 0.467      | 0.6467     | 5.7871     | 0.8211     | 0.5637    
-BM25 (Base BSBI)                       | 0.443      | 0.6722     | 5.8999     | 0.8307     | 0.5849    
-BM25-WAND (Base BSBI)                  | 0.428      | 0.6903     | 5.9715     | 0.8372     | 0.5945    
-Lexical WAND (SPIMI Bonus)             | 0.491      | 0.6903     | 5.9715     | 0.8372     | 0.5945    
-Adaptive Hybrid (FAISS + Patricia)     | 0.534      | 0.7722     | 6.5673     | 0.8930     | 0.7058    
+Retrieval Architecture         | Time (s) | RBP     | DCG     | NDCG    | AP
+---------------------------------------------------------------------------------
+TF-IDF (BSBI)                  | 0.130    | 0.6467  | 5.7871  | 0.8211  | 0.5637
+BM25 (BSBI)                    | 0.133    | 0.6722  | 5.8999  | 0.8307  | 0.5849
+BM25-WAND (BSBI)               | 0.193    | 0.6903  | 5.9715  | 0.8372  | 0.5945
+BM25-WAND (SPIMI + Trie)       | 0.290    | 0.6903  | 5.9715  | 0.8372  | 0.5945
+Adaptive (BM25 + LSI)          | 0.643    | 0.7722  | 6.5673  | 0.8930  | 0.7058
 ```
 
-### 2. Live Retrieval Comparisons
+The hybrid improves MAP by 20.7% over BM25 and is better on 25 of the 30 queries.
 
-**Lexical Engine Output** (`python search.py "alkylated with radioactive iodoacetate" --index spimi --dictionary trie --compression elias --metric wand --snippets`)
+## Index sizes
+
+Postings file for the whole collection:
+
+| Codec | Size | vs. uncompressed |
+| --- | --- | --- |
+| Uncompressed | 478.5 KiB | — |
+| Variable-Byte | 131.1 KiB | 3.65× smaller |
+| Elias-Gamma | 168.0 KiB | 2.85× smaller |
+
+Elias-Gamma is smaller for frequent terms with small gaps (`cancer`: 99 B vs. 159 B for VByte), yet VByte wins overall. Half the vocabulary (4,209 of 8,543 terms) occurs in a single document, and every Elias-Gamma list (doc IDs and TFs) starts with a 4-byte length header: those rare terms cost 49.7 KB in Elias-Gamma against 12.3 KB in VByte, which accounts for nearly the whole difference.
+
+## Project layout
+
 ```text
-Features: SPIMI Indexing, Trie Dictionary, Elias-Gamma, WAND, Snippets
-Query: alkylated with radioactive iodoacetate
---------------------------------------------------------------------------------
-  1. .\collection\6\507.txt  (WAND Lexical Score: 13.1882)
-     ... the thiol group has been **alkylated** with **radioactive** iodoacetate in the presence of urea. partial acid hydroly- sis of the **alkylated** protein gives, according to the conditions, mainly 3 **radioactive** ...
-
-  2. .\collection\11\1003.txt  (WAND Lexical Score: 7.9258)
-     ... of chlorimine (short-acting **alkylating** agent). experience with five cases. a method is discussed for providing palliative treatment for patients with nonresectable lung cancer by means of administering a short-acting **alkylating** ...
-
-  3. .\collection\6\554.txt  (WAND Lexical Score: 7.4333)
-     ... distribution and excretion of **radioactivity** after parenteral administration of **radioactive** polydiethylstilbestrol phosphate to rats and a cow. polydiethylstilbestrol phosphate (psp), a water soluble polyester of phos- phoric acid and diethylstilbestrol, ...
-```
-
-**Dense Semantic Engine Output** (`python search.py "alkylated with radioactive iodoacetate" --index spimi --dictionary patricia --compression elias --metric adaptive --snippets`) 
-```text
-Features: SPIMI Patricia Tree, WAND Lexical, LSI FAISS Semantics, Adaptive Routing, Snippets
-Query: alkylated with radioactive iodoacetate
---------------------------------------------------------------------------------
-  1. .\collection\6\507.txt  (Adaptive Score: 0.9476)
-     ... the thiol group has been **alkylated** with **radioactive** iodoacetate in the presence of urea. partial acid hydroly- sis of the **alkylated** protein gives, according to the conditions, mainly 3 **radioactive** ...
-
-  2. .\collection\8\745.txt  (Adaptive Score: 0.6558)
-     ... metabolism and excretion of c14-labeled bilirubin in children with biliary atresia and judson g. randolph **radioactive** bilirubin was injected intravenously into 3 children with biliary atresia. the isotope over a ...
-
-  3. .\collection\1\92.txt  (Adaptive Score: 0.6400)
-     ... did not enter the area, suggesting a thrombus within the aneurysm . in 5, the aneurysm was detectable on the film and was also seen to be filled with **radioactivity** ...
-```
-
-**Base Engine Console Matrix** (`python search.py "alkylated with radioactive iodoacetate"`)
-```text
-============================================================
-Query: alkylated with radioactive iodoacetate
-============================================================
-
-[TF-IDF]
-  .\collection\6\507.txt                         23.2421
-  .\collection\6\554.txt                         11.6201
-  .\collection\11\1003.txt                        8.7171
-  .\collection\4\387.txt                          8.2780
-  .\collection\4\388.txt                          8.2780
-
-[BM25]
-  .\collection\6\507.txt                         19.2556
-  .\collection\11\1003.txt                        7.9258
-  .\collection\6\554.txt                          7.4333
-  .\collection\6\506.txt                          6.8043
-  .\collection\8\793.txt                          6.3867
-
-[BM25 + WAND Top-K]
-  .\collection\6\507.txt                         19.2556
-  .\collection\11\1003.txt                        7.9258
-  .\collection\6\554.txt                          7.4333
-  .\collection\6\506.txt                          6.8043
-  .\collection\8\793.txt                          6.3867
+build.py              build one or all index configurations
+search.py             CLI search
+evaluation.py         benchmark harness (RBP, DCG, NDCG, AP)
+engine.py             index configurations, build(), SearchEngine facade
+text/                 tokenizer and Porter stemmer
+indexers/             BSBIIndex, SPIMIIndex, SPIMIPatriciaIndex
+dictionary/           IdMap, TrieIdMap, PatriciaTreeIdMap
+compression/          StandardPostings, VBEPostings, EliasGammaPostings
+storage/              InvertedIndexReader / InvertedIndexWriter
+retrieval/            AdaptiveRetriever, LSI builder, snippets
+metrics/              rbp, dcg, ndcg, ap
+web/                  FastAPI app (python -m web) and static frontend
+collection/           the 1,033 documents, in 11 blocks
+queries.txt, qrels.txt
 ```

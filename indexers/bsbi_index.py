@@ -1,166 +1,38 @@
 import os
-import re
 import pickle
 import contextlib
 import heapq
-import time
 import math
 
 from storage import InvertedIndexReader, InvertedIndexWriter
 from dictionary import IdMap
-from util import sorted_merge_posts_and_tfs
-from compression import StandardPostings, VBEPostings, EliasGammaPostings
 from tqdm import tqdm
 
-# ---------------------------------------------------------------------------
-# Minimal English stopword list (no external libraries)
-# ---------------------------------------------------------------------------
-STOPWORDS = {
-    'a', 'an', 'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
-    'of', 'with', 'by', 'from', 'is', 'was', 'are', 'were', 'be', 'been',
-    'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would',
-    'could', 'should', 'may', 'might', 'shall', 'can', 'this', 'that',
-    'these', 'those', 'it', 'its', 'as', 'if', 'not', 'no', 'nor',
-    'so', 'yet', 'both', 'either', 'neither', 'each', 'few', 'more',
-    'most', 'other', 'some', 'such', 'than', 'too', 'very', 'just',
-    'about', 'above', 'after', 'all', 'also', 'am', 'any', 'because',
-    'before', 'between', 'during', 'he', 'her', 'him', 'his', 'how',
-    'i', 'into', 'me', 'my', 'our', 'out', 'own', 'same', 'she',
-    'their', 'them', 'then', 'there', 'they', 'through', 'under', 'until',
-    'up', 'us', 'we', 'what', 'when', 'where', 'which', 'while',
-    'who', 'whom', 'why', 'you', 'your',
-}
+from text import tokenize
 
-# ---------------------------------------------------------------------------
-# Minimal Porter Stemmer (rule-based, standard library only)
-# ---------------------------------------------------------------------------
-_VOWELS = set('aeiou')
 
-def _has_vowel(stem):
-    return any(c in _VOWELS for c in stem)
-
-def _ends_cvc(word):
-    """True if word ends with consonant-vowel-consonant, and last consonant is not w/x/y."""
-    if len(word) < 3:
-        return False
-    c1, v, c2 = word[-3], word[-2], word[-1]
-    return (c1 not in _VOWELS and v in _VOWELS and
-            c2 not in _VOWELS and c2 not in 'wxy')
-
-def porter_stem(word):
+def sorted_merge_posts_and_tfs(posts_tfs1, posts_tfs2):
     """
-    Simplified Porter stemmer covering the most impactful rules.
-    Operates on lowercase words.
+    Merges two lists of tuples (doc id, tf) and returns the merged result
+    (TF needs to be accumulated for all tuples with the same doc id)
     """
-    if len(word) <= 2:
-        return word
-
-    # Step 1a
-    if word.endswith('sses'):
-        word = word[:-2]
-    elif word.endswith('ies'):
-        word = word[:-2]
-    elif word.endswith('ss'):
-        pass
-    elif word.endswith('s'):
-        word = word[:-1]
-
-    # Step 1b
-    if word.endswith('eed'):
-        if len(word[:-3]) > 0:
-            word = word[:-1]
-    elif word.endswith('ed'):
-        stem = word[:-2]
-        if _has_vowel(stem):
-            word = stem
-            if word.endswith('at') or word.endswith('bl') or word.endswith('iz'):
-                word += 'e'
-            elif (len(word) > 1 and word[-1] == word[-2] and word[-1] not in 'lsz'):
-                word = word[:-1]
-    elif word.endswith('ing'):
-        stem = word[:-3]
-        if _has_vowel(stem):
-            word = stem
-            if word.endswith('at') or word.endswith('bl') or word.endswith('iz'):
-                word += 'e'
-            elif (len(word) > 1 and word[-1] == word[-2] and word[-1] not in 'lsz'):
-                word = word[:-1]
-
-    # Step 1c
-    if word.endswith('y') and _has_vowel(word[:-1]):
-        word = word[:-1] + 'i'
-
-    # Step 2 (most common suffixes)
-    step2_map = {
-        'ational': 'ate', 'tional': 'tion', 'enci': 'ence',
-        'anci': 'ance', 'izer': 'ize', 'abli': 'able',
-        'alli': 'al',   'entli': 'ent', 'eli': 'e',
-        'ousli': 'ous', 'ization': 'ize', 'ation': 'ate',
-        'ator': 'ate',  'alism': 'al',   'iveness': 'ive',
-        'fulness': 'ful', 'ousness': 'ous', 'aliti': 'al',
-        'iviti': 'ive', 'biliti': 'ble',
-    }
-    for suffix, replacement in step2_map.items():
-        if word.endswith(suffix):
-            stem = word[:-len(suffix)]
-            if len(stem) > 0:
-                word = stem + replacement
-            break
-
-    # Step 3
-    step3_map = {
-        'icate': 'ic', 'ative': '', 'alize': 'al',
-        'iciti': 'ic', 'ical': 'ic', 'ful': '', 'ness': '',
-    }
-    for suffix, replacement in step3_map.items():
-        if word.endswith(suffix):
-            stem = word[:-len(suffix)]
-            if len(stem) > 0:
-                word = stem + replacement
-            break
-
-    # Step 4 (remove derivational suffixes)
-    step4_list = [
-        'ement', 'ment', 'ance', 'ence', 'able', 'ible',
-        'ant',   'ent',  'ion',  'ism',  'ate',  'iti',
-        'ous',   'ive',  'ize',  'al',   'er',   'ic',
-    ]
-    for suffix in step4_list:
-        if word.endswith(suffix):
-            stem = word[:-len(suffix)]
-            if len(stem) > 1:
-                word = stem
-            break
-
-    # Step 5a
-    if word.endswith('e'):
-        stem = word[:-1]
-        if len(stem) > 1:
-            word = stem
-        elif len(stem) == 1 and not _ends_cvc(stem):
-            word = stem
-
-    # Step 5b
-    if len(word) > 1 and word.endswith('ll') and len(word) > 2:
-        word = word[:-1]
-
-    return word
-
-
-def tokenize(text):
-    """
-    Lowercase, strip punctuation/numbers, remove stopwords, apply stemming.
-    Returns a list of processed tokens.
-    """
-    # lowercase & strip non-alpha characters
-    tokens = re.findall(r'[a-z]+', text.lower())
-    result = []
-    for t in tokens:
-        if len(t) > 1 and t not in STOPWORDS:
-            stemmed = porter_stem(t)
-            if len(stemmed) > 1:
-                result.append(stemmed)
-    return result
+    i, j = 0, 0
+    merge = []
+    while (i < len(posts_tfs1)) and (j < len(posts_tfs2)):
+        if posts_tfs1[i][0] == posts_tfs2[j][0]:
+            freq = posts_tfs1[i][1] + posts_tfs2[j][1]
+            merge.append((posts_tfs1[i][0], freq))
+            i += 1
+            j += 1
+        elif posts_tfs1[i][0] < posts_tfs2[j][0]:
+            merge.append(posts_tfs1[i])
+            i += 1
+        else:
+            merge.append(posts_tfs2[j])
+            j += 1
+    merge.extend(posts_tfs1[i:])
+    merge.extend(posts_tfs2[j:])
+    return merge
 
 
 class BSBIIndex:
@@ -169,11 +41,11 @@ class BSBIIndex:
     ----------
     term_id_map(IdMap): To map terms to termIDs
     doc_id_map(IdMap): To map relative paths from documents (e.g.,
-                    /collection/0/gamma.txt) to docIDs
+                    collection/0/gamma.txt) to docIDs
     data_dir(str): Path to data
     output_dir(str): Path to output index files
-    postings_encoding: See compression.py, candidates are StandardPostings,
-                    VBEPostings, EliasGammaPostings, dsb.
+    postings_encoding: See the compression package, candidates are
+                    StandardPostings, VBEPostings, EliasGammaPostings.
     index_name(str): Name of the file containing the inverted index
     """
     def __init__(self, data_dir, output_dir, postings_encoding, index_name = "main_index"):
@@ -224,15 +96,23 @@ class BSBIIndex:
         List[Tuple[Int, Int]]
             Returns all the td_pairs extracted from the block
         """
-        dir = os.path.join(".", self.data_dir, block_dir_relative)
         td_pairs = []
-        for filename in next(os.walk(dir))[2]:
-            docname = os.path.join(dir, filename)
+        for docname in self.block_documents(block_dir_relative):
             with open(docname, "r", encoding="utf8", errors="surrogateescape") as f:
                 for token in tokenize(f.read()):
                     td_pairs.append((self.term_id_map[token], self.doc_id_map[docname]))
 
         return td_pairs
+
+    def block_documents(self, block_dir_relative):
+        """Yields the document paths of a block as portable 'collection/<block>/<file>' strings."""
+        block_dir = os.path.join(self.data_dir, block_dir_relative)
+        for filename in next(os.walk(block_dir))[2]:
+            yield f"{self.data_dir}/{block_dir_relative}/{filename}"
+
+    def invert_block(self, block_dir_relative, index):
+        """Indexes one block of the collection into an intermediate InvertedIndexWriter."""
+        self.invert_write(self.parse_block(block_dir_relative), index)
 
     def invert_write(self, td_pairs, index):
         """
@@ -270,6 +150,14 @@ class BSBIIndex:
         indices: List[InvertedIndexReader]
         merged_index: InvertedIndexWriter
         """
+        N = len(self.doc_id_map)
+
+        def append(term, postings, tf_list):
+            # WAND upper bound for BM25: IDF(t) * (k1 + 1), the limit of the
+            # tf-component as tf -> inf. Precomputed here and persisted with the index.
+            upper_bound = self._bm25_idf(len(postings), N) * (self.WAND_K1 + 1)
+            merged_index.append(term, postings, tf_list, max_score=upper_bound)
+
         # the following code assumes there is at least 1 term
         merged_iter = heapq.merge(*indices, key = lambda x: x[0])
         curr, postings, tf_list = next(merged_iter) # first item
@@ -280,14 +168,12 @@ class BSBIIndex:
                 postings = [doc_id for (doc_id, _) in zip_p_tf]
                 tf_list = [tf for (_, tf) in zip_p_tf]
             else:
-                merged_index.append(curr, postings, tf_list)
+                append(curr, postings, tf_list)
                 curr, postings, tf_list = t, postings_, tf_list_
-        merged_index.append(curr, postings, tf_list)
+        append(curr, postings, tf_list)
 
-    # ------------------------------------------------------------------
-    # BM25 helper: compute upper-bound score for WAND
-    # upper bound = IDF * (k1 + 1)  (achieved when tf -> inf, |D| -> 0)
-    # ------------------------------------------------------------------
+    WAND_K1 = 1.2
+
     @staticmethod
     def _bm25_idf(df, N):
         return math.log(1 + (N - df + 0.5) / (df + 0.5))
@@ -295,22 +181,6 @@ class BSBIIndex:
     @staticmethod
     def _bm25_tf_component(tf, doc_len, avgdl, k1=1.2, b=0.75):
         return (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * doc_len / avgdl))
-
-    def _compute_wand_upper_bounds(self, k1=1.2):
-        """
-        After indexing, compute BM25 upper-bound scores per term and store
-        them in the merged index's max_score_dict.
-        Upper bound = IDF(t) * (k1 + 1)
-        """
-        with InvertedIndexReader(self.index_name, self.postings_encoding,
-                                 directory=self.output_dir) as merged_index:
-            N = len(merged_index.doc_length)
-            if N == 0:
-                return
-            for term_id, (pos, df, _, _) in merged_index.postings_dict.items():
-                idf = self._bm25_idf(df, N)
-                upper_bound = idf * (k1 + 1)
-                merged_index.max_score_dict[term_id] = upper_bound
 
     def retrieve_tfidf(self, query, k = 10):
         """
@@ -420,6 +290,10 @@ class BSBIIndex:
             return sorted(docs, key=lambda x: x[0], reverse=True)[:k]
 
     def retrieve_bm25_wand(self, query, k=10, k1=1.2, b=0.75):
+        """BM25 + WAND Top-K retrieval. See `retrieve_bm25_wand_with_stats`."""
+        return self.retrieve_bm25_wand_with_stats(query, k, k1, b)[0]
+
+    def retrieve_bm25_wand_with_stats(self, query, k=10, k1=1.2, b=0.75):
         """
         WAND (Weak AND) Top-K Retrieval with BM25 scoring.
 
@@ -444,12 +318,15 @@ class BSBIIndex:
 
         Returns
         -------
-        List[(float, str)]
-            Top-K documents sorted in descending order based on BM25 score.
+        (List[(float, str)], dict)
+            Top-K documents sorted in descending order based on BM25 score,
+            and pruning statistics: `candidates` (documents an exhaustive
+            BM25 would score) and `scored` (documents WAND fully evaluated).
         """
         if len(self.term_id_map) == 0 or len(self.doc_id_map) == 0:
             self.load()
 
+        stats = {'candidates': 0, 'scored': 0}
         terms = []
         for word in tokenize(query):
             if word in self.term_id_map.str_to_id:
@@ -458,19 +335,19 @@ class BSBIIndex:
                     terms.append(term_id)
 
         if not terms:
-            return []
+            return [], stats
 
         with InvertedIndexReader(self.index_name, self.postings_encoding,
                                  directory=self.output_dir) as merged_index:
             N = len(merged_index.doc_length)
             if N == 0:
-                return []
+                return [], stats
             avgdl = sum(merged_index.doc_length.values()) / N
 
             # Filter to terms that are in the index
             valid_terms = [t for t in terms if t in merged_index.postings_dict]
             if not valid_terms:
-                return []
+                return [], stats
 
             # Load postings lists and upper bounds into memory
             postings_lists = {}
@@ -480,10 +357,14 @@ class BSBIIndex:
                 pl, tfl = merged_index.get_postings_list(term)
                 postings_lists[term] = pl
                 tf_lists[term] = tfl
-                df = merged_index.postings_dict[term][1]
-                idf = self._bm25_idf(df, N)
-                # Upper bound: IDF * (k1+1) — the max possible tf-component is (k1+1)
-                upper_bounds[term] = idf * (k1 + 1)
+                stored_bound = merged_index.max_score_dict.get(term)
+                if stored_bound is not None and k1 == self.WAND_K1:
+                    upper_bounds[term] = stored_bound
+                else:
+                    df = merged_index.postings_dict[term][1]
+                    upper_bounds[term] = self._bm25_idf(df, N) * (k1 + 1)
+
+            stats['candidates'] = len(set().union(*postings_lists.values()))
 
             # Pointer into each postings list
             pointers = {term: 0 for term in valid_terms}
@@ -528,6 +409,7 @@ class BSBIIndex:
                 # Check if all pointers up to pivot_idx point to pivot_doc
                 if active[0][0] == pivot_doc:
                     # Full evaluation: compute exact BM25 for pivot_doc
+                    stats['scored'] += 1
                     doc_len = merged_index.doc_length.get(pivot_doc, avgdl)
                     score = 0.0
                     for _, term in active:
@@ -557,40 +439,32 @@ class BSBIIndex:
                         advance_to(term, pivot_doc)
 
         results = [(score, self.doc_id_map[doc_id]) for score, doc_id in top_k_heap]
-        return sorted(results, key=lambda x: x[0], reverse=True)
+        return sorted(results, key=lambda x: x[0], reverse=True), stats
 
     def index(self):
         """
-        Base indexing code — BSBI (Blocked Sort-Based Indexing).
-
-        Scan all data in collection, parse each block, invert, save
-        to intermediate index, then merge all into one final index.
-        After merge, calculate BM25 upper-bound scores for WAND.
+        Scan all data in collection, invert each block into an intermediate
+        index, then merge them into one final index (external merge sort).
+        BM25 upper bounds for WAND are computed during the merge.
+        Subclasses change how a block is inverted by overriding `invert_block`.
         """
+        os.makedirs(self.output_dir, exist_ok=True)
+        self.intermediate_indices = []
         # loop for each sub-directory in the collection folder (each block)
         for block_dir_relative in tqdm(sorted(next(os.walk(self.data_dir))[1])):
-            td_pairs = self.parse_block(block_dir_relative)
-            index_id = 'intermediate_index_'+block_dir_relative
+            index_id = 'intermediate_index_' + block_dir_relative
             self.intermediate_indices.append(index_id)
-            with InvertedIndexWriter(index_id, self.postings_encoding, directory = self.output_dir) as index:
-                self.invert_write(td_pairs, index)
-                td_pairs = None
-    
+            with InvertedIndexWriter(index_id, self.postings_encoding, directory=self.output_dir) as index:
+                self.invert_block(block_dir_relative, index)
+
         self.save()
 
-        with InvertedIndexWriter(self.index_name, self.postings_encoding, directory = self.output_dir) as merged_index:
+        with InvertedIndexWriter(self.index_name, self.postings_encoding, directory=self.output_dir) as merged_index:
             with contextlib.ExitStack() as stack:
                 indices = [stack.enter_context(InvertedIndexReader(index_id, self.postings_encoding, directory=self.output_dir))
-                               for index_id in self.intermediate_indices]
+                           for index_id in self.intermediate_indices]
                 self.merge(indices, merged_index)
 
-        # Compute BM25 upper-bound scores for WAND after merge is complete
-        self._compute_wand_upper_bounds()
-
-
-if __name__ == "__main__":
-
-    BSBI_instance = BSBIIndex(data_dir = 'collection', \
-                              postings_encoding = VBEPostings, \
-                              output_dir = 'index')
-    BSBI_instance.index() 
+        for index_id in self.intermediate_indices:
+            for ext in ('.index', '.dict'):
+                os.remove(os.path.join(self.output_dir, index_id + ext))
